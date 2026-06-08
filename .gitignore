@@ -1,0 +1,10 @@
+# Build outputs
+*.o
+*.out
+*.exe
+kvstore
+testcase
+
+# Local editor and notes
+.vscode/
+notes/
