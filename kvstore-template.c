@@ -95,6 +95,7 @@ int kvstore_parse_protocol(struct conn_item *item,char **tokens,int count){
                 snprintf(msg,BUFFER_LENGTH,"%s","SUCCESS");
             }
             break;
+        }
         case KVS_CMD_GET:{
             //get key
             char *value = kvstore_array_get(tokens[1]);
@@ -131,6 +132,9 @@ int kvstore_parse_protocol(struct conn_item *item,char **tokens,int count){
             break;
         }
 
+    }
+
+    return 0;
 }
 
 int kvstore_request(struct conn_item *item){
@@ -154,13 +158,13 @@ int kvstore_request(struct conn_item *item){
 }
 
 int kvstore_response(struct conn_item *item){
-
+    return 0;
 }
 
 int main(){
 
 #if ENABLE_NETWORK_SELECT == NETWORK_EPOLL
-    enpoll_entry();
+    epoll_entry();
 #elif ENABLE_NETWORK_SELECT == NETWORK_NTYCO
     ntyco_entry();  
 

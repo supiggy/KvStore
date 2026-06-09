@@ -1,6 +1,8 @@
 #ifndef _KVSTORE_H
 #define _KVSTORE_H
 
+#include <stddef.h>
+
 #define BUFFER_LENGTH		512
 
 typedef int (*RCALLBACK)(int fd);
@@ -38,7 +40,9 @@ void kvstore_free(void *ptr);
 
 
 #define ENABLE_ARRAY_KVENGINE 1
-#define ENABLE_NETWORK_SELECT NETWORK_NTYCO
+#define ENABLE_RBTREE_KVENGINE 1
+#define ENABLE_HASH_KVENGINE 1
+#define ENABLE_NETWORK_SELECT NETWORK_EPOLL
 
 
 //这是 数组实现的 KVStore，提供了基本的增删改查
@@ -58,6 +62,23 @@ int kvstore_array_mod(char *key, char *value);
 #define KVS_ARRAY_SIZE 1024
 #endif
 
+#if ENABLE_RBTREE_KVENGINE
+int   kvstore_rbtree_create(void);
+void  kvstore_rbtree_destroy(void);
+int   kvstore_rbtree_set(char *key, char *value);
+char *kvstore_rbtree_get(char *key);
+int   kvstore_rbtree_del(char *key);
+int   kvstore_rbtree_mod(char *key, char *value);
+#endif
+
+#if ENABLE_HASH_KVENGINE
+int   kvstore_hash_create(int size);
+void  kvstore_hash_destroy(void);
+int   kvstore_hash_set(char *key, char *value);
+char *kvstore_hash_get(char *key);
+int   kvstore_hash_del(char *key);
+int   kvstore_hash_mod(char *key, char *value);
+#endif
 
 
 #endif

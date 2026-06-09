@@ -1,3 +1,11 @@
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include "kvstore.h"
 
 #define MAX_MAS_LENGTH 1024
 
@@ -47,12 +55,6 @@ int test_case(int connfd,char *msg,char *pattern,char *casename) {
         return -1;
     }
 
-    if (strcmp(rbuffer, msg) != 0) {
-        printf("failed: '%s' != '%s'\n", rbuffer, msg);
-        return -1;
-    }
-
-
     equals(pattern, rbuffer, casename);
     return 0;
 }
@@ -68,6 +70,28 @@ int array_test_case(int connfd) {
     test_case(connfd, "GET NAME", "NO EXIST","GET Case");
 
      return 0;  
+}
+
+int rbtree_test_case(int connfd) {
+    test_case(connfd, "RSET NAME King", "SUCCESS","RSET Case");
+    test_case(connfd, "RGET NAME", "King","RGET Case");
+    test_case(connfd, "RMOD NAME Queen", "SUCCESS","RMOD Case");
+    test_case(connfd, "RGET NAME", "Queen","RGET Case");
+    test_case(connfd, "RDEL NAME", "SUCCESS","RDEL Case");
+    test_case(connfd, "RGET NAME", "NO EXIST","RGET Case");
+
+    return 0;
+}
+
+int hash_test_case(int connfd) {
+    test_case(connfd, "HSET NAME King", "SUCCESS","HSET Case");
+    test_case(connfd, "HGET NAME", "King","HGET Case");
+    test_case(connfd, "HMOD NAME Queen", "SUCCESS","HMOD Case");
+    test_case(connfd, "HGET NAME", "Queen","HGET Case");
+    test_case(connfd, "HDEL NAME", "SUCCESS","HDEL Case");
+    test_case(connfd, "HGET NAME", "NO EXIST","HGET Case");
+
+    return 0;
 }
 
 int connect_tcpserver(const char *ip, unsigned short port) {
@@ -102,13 +126,13 @@ int main(int argc, char *argv[]) {
     int mode = 0;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "s:p:t:c:n:?")) != -1) {
+	while ((opt = getopt(argc, argv, "s:p:m:?")) != -1) {
 
 		switch (opt) {
 
 			case 's':
 				printf("-s: %s\n", optarg);
-				strcpy(ip, optarg);
+				ip = optarg;
 				break;
 
 			case 'p':
@@ -132,6 +156,15 @@ int main(int argc, char *argv[]) {
     if(mode & 0x01){
         ret = array_test_case(connfd);
     }
+    if(mode & 0x02){
+        ret = rbtree_test_case(connfd);
+    }
+    if(mode & 0x04){
+        ret = hash_test_case(connfd);
+    }
+
+    close(connfd);
+    return ret;
 
 }
 

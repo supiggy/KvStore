@@ -12,7 +12,17 @@ struct kvs_array_item array_table[KVS_ARRAY_SIZE] = {0};
 int array_idx = 0;
 
 int kvstore_array_set(char *key, char *value) {
-    if (key == NULL || value == NULL || array_idx >= KVS_ARRAY_SIZE) {
+    if (key == NULL || value == NULL) {
+        return -1;
+    }
+
+    for (int i = 0; i < array_idx; i++) {
+        if (strcmp(array_table[i].key, key) == 0) {
+            return 1;
+        }
+    }
+
+    if (array_idx >= KVS_ARRAY_SIZE) {
         return -1; // Array is full
     }
 
@@ -38,6 +48,7 @@ int kvstore_array_set(char *key, char *value) {
     array_table[array_idx].key = key_copy;
     array_table[array_idx].value = value_copy;
     array_idx++;
+    return 0;
 }
 
 char *kvstore_array_get(char *key) {
@@ -72,11 +83,13 @@ int kvstore_array_del(char *key) {
             //这里是把数组中后面的元素往前移动一位,
             //来覆盖掉被删除的元素, 这样就保持了数组的连续性, 同时也避免了留下一个空洞在数组中。
             array_idx--;
+            array_table[array_idx].key = NULL;
+            array_table[array_idx].value = NULL;
             return 0; // Key deleted successfully
         }
     }
 
-    return -1; // Key not found
+    return 1; // Key not found
 }
 
 int kvstore_array_mod(char *key, char *value) {
@@ -104,5 +117,5 @@ int kvstore_array_mod(char *key, char *value) {
         }
     }
 
-    return i; // Key not found
+    return 1; // Key not found
 }

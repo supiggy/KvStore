@@ -1,0 +1,31 @@
+{
+    // VSCode Dev Container 配置：把整个项目放进 gcc:14 的 Linux 环境里开发
+    // 用法：F1 -> "Dev Containers: Reopen in Container"
+    "name": "kvstore (gcc:14 Linux)",
+
+    // 直接用已缓存的官方 gcc 镜像，含 gcc/g++/make，epoll 等 Linux 头齐全
+    "image": "gcc:14",
+
+    "customizations": {
+        "vscode": {
+            // 进容器后自动装好 C/C++ 和 Makefile 支持
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.makefile-tools"
+            ],
+            "settings": {
+                "C_Cpp.default.cStandard": "c11",
+                "terminal.integrated.defaultProfile.linux": "bash"
+            }
+        }
+    },
+
+    // reactor(epoll) 默认绑 2048~2067，这里转发几个出来方便本机连测试
+    "forwardPorts": [2048, 2049, 2050],
+
+    // 容器里以 root 运行，编译/绑端口都省事（教学项目无所谓）
+    "remoteUser": "root"
+
+    // 如需进容器自动装额外工具，可加：
+    // "postCreateCommand": "apt-get update && apt-get install -y gdb valgrind"
+}
