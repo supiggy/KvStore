@@ -42,6 +42,7 @@ void kvstore_free(void *ptr);
 #define ENABLE_ARRAY_KVENGINE 1
 #define ENABLE_RBTREE_KVENGINE 1
 #define ENABLE_HASH_KVENGINE 1
+#define ENABLE_SKIPTABLE_KVENGINE 1
 #define ENABLE_NETWORK_SELECT NETWORK_EPOLL
 
 
@@ -78,6 +79,15 @@ int   kvstore_hash_set(char *key, char *value);
 char *kvstore_hash_get(char *key);
 int   kvstore_hash_del(char *key);
 int   kvstore_hash_mod(char *key, char *value);
+#endif
+
+#if ENABLE_SKIPTABLE_KVENGINE
+int   kvstore_skiplist_create(void);
+void  kvstore_skiplist_destroy(void);
+int   kvstore_skiplist_set(char *key, char *value);
+char *kvstore_skiplist_get(char *key);
+int   kvstore_skiplist_del(char *key);
+int   kvstore_skiplist_mod(char *key, char *value);
 #endif
 
 

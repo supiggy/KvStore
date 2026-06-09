@@ -94,6 +94,17 @@ int hash_test_case(int connfd) {
     return 0;
 }
 
+int skiplist_test_case(int connfd) {
+    test_case(connfd, "ZSET NAME King", "SUCCESS","ZSET Case");
+    test_case(connfd, "ZGET NAME", "King","ZGET Case");
+    test_case(connfd, "ZMOD NAME Queen", "SUCCESS","ZMOD Case");
+    test_case(connfd, "ZGET NAME", "Queen","ZGET Case");
+    test_case(connfd, "ZDEL NAME", "SUCCESS","ZDEL Case");
+    test_case(connfd, "ZGET NAME", "NO EXIST","ZGET Case");
+
+    return 0;
+}
+
 int connect_tcpserver(const char *ip, unsigned short port) {
 
 	int connfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -161,6 +172,9 @@ int main(int argc, char *argv[]) {
     }
     if(mode & 0x04){
         ret = hash_test_case(connfd);
+    }
+    if(mode & 0x08){
+        ret = skiplist_test_case(connfd);
     }
 
     close(connfd);

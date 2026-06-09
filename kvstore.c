@@ -10,6 +10,7 @@ const char *comands[] = {
     "SET", "GET", "DEL", "MOD",
     "RSET", "RGET", "RDEL", "RMOD",
     "HSET", "HGET", "HDEL", "HMOD",
+    "ZSET", "ZGET", "ZDEL", "ZMOD",
 };
 
 enum {
@@ -26,6 +27,10 @@ enum {
     KVS_CMD_HGET,
     KVS_CMD_HDEL,
     KVS_CMD_HMOD,
+    KVS_CMD_ZSET,
+    KVS_CMD_ZGET,
+    KVS_CMD_ZDEL,
+    KVS_CMD_ZMOD,
     KVS_CMD_COUNT,
 };
 
@@ -211,6 +216,36 @@ int kvstore_parse_protocol(struct conn_item *item, char **tokens, int count) {
             kvstore_write_delmod_response(msg, kvstore_hash_mod(tokens[1], tokens[2]));
             break;
 #endif
+#if ENABLE_SKIPTABLE_KVENGINE
+        case KVS_CMD_ZSET:
+            if (count < 3) {
+                snprintf(msg, BUFFER_LENGTH, "ERROR");
+                return -1;
+            }
+            kvstore_write_set_response(msg, kvstore_skiplist_set(tokens[1], tokens[2]));
+            break;
+        case KVS_CMD_ZGET:
+            if (count < 2) {
+                snprintf(msg, BUFFER_LENGTH, "ERROR");
+                return -1;
+            }
+            kvstore_write_get_response(msg, kvstore_skiplist_get(tokens[1]));
+            break;
+        case KVS_CMD_ZDEL:
+            if (count < 2) {
+                snprintf(msg, BUFFER_LENGTH, "ERROR");
+                return -1;
+            }
+            kvstore_write_delmod_response(msg, kvstore_skiplist_del(tokens[1]));
+            break;
+        case KVS_CMD_ZMOD:
+            if (count < 3) {
+                snprintf(msg, BUFFER_LENGTH, "ERROR");
+                return -1;
+            }
+            kvstore_write_delmod_response(msg, kvstore_skiplist_mod(tokens[1], tokens[2]));
+            break;
+#endif
         default:
             snprintf(msg, BUFFER_LENGTH, "UNKNOWN COMMAND");
             return -1;
@@ -254,6 +289,11 @@ int main(void) {
         return -1;
     }
 #endif
+#if ENABLE_SKIPTABLE_KVENGINE
+    if (kvstore_skiplist_create() != 0) {
+        return -1;
+    }
+#endif
 
 #if ENABLE_NETWORK_SELECT == NETWORK_EPOLL
     epoll_entry();
@@ -263,6 +303,9 @@ int main(void) {
     io_uring_entry();
 #endif
 
+#if ENABLE_SKIPTABLE_KVENGINE
+    kvstore_skiplist_destroy();
+#endif
 #if ENABLE_HASH_KVENGINE
     kvstore_hash_destroy();
 #endif

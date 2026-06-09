@@ -1,4 +1,4 @@
-# 项目知识点：KVStore 存储引擎（Array / Hash / 红黑树）
+# 项目知识点：KVStore 存储引擎（Array / Hash / 红黑树 / 跳表）
 
 ## 0. 一句话定位
 
@@ -27,8 +27,12 @@ recv -> kvstore_request
 | 数组 array | 无 | `SET / GET / DEL / MOD` |
 | 红黑树 rbtree | `R` | `RSET / RGET / RDEL / RMOD` |
 | 哈希 hash | `H` | `HSET / HGET / HDEL / HMOD` |
+| 跳表 skiplist | `Z` | `ZSET / ZGET / ZDEL / ZMOD` |
 
-三引擎同时在线，可在同一服务里横向对比行为与性能。
+> 前缀：rbtree 取首字母 `R`、hash 取 `H`、array 默认无前缀；跳表用 `Z` 而非首字母 `S`——
+> 致敬 Redis：其有序集合 zset 底层正是跳表，命令也以 `Z` 开头。
+
+四引擎同时在线，可在同一服务里横向对比行为与性能。
 
 ### 1.3 统一返回值约定（三引擎必须对齐）
 
@@ -186,26 +190,94 @@ case4 兄弟黑且远侄红：变色 + 旋转父亲，补上黑高，结束(x=ro
 
 ---
 
-## 4. 三引擎横向对比（总归纳）
+## 4. 跳表（Skip List，概率型有序链表）
 
-| 维度 | 数组 array | 哈希 hash | 红黑树 rbtree |
-|---|---|---|---|
-| 查找 | O(n) | 平均 O(1) | O(log n) |
-| 插入/删除 | O(n)（删要搬移） | 平均 O(1) | O(log n) |
-| 是否有序 | 插入序 | 无序 | **有序** |
-| 范围查询 | 不支持 | 不支持 | 支持 |
-| 是否需 init | 否（静态数组） | 是（桶数组 create） | 是（哨兵 nil create） |
-| 主要风险 | 容量固定、删除搬移 | 冲突退化、需 rehash | fixup 旋转易写错 |
+### 4.1 结构
+
+```c
+struct skipnode {
+    char *key; char *value;
+    struct skipnode **forward;   // 长度=本节点层高，forward[i] 是第 i 层后继
+};
+struct skiplist {
+    struct skipnode *header;     // 哨兵头节点(key=NULL)，forward 拉满 MAX_LEVEL 层
+    int level;                   // 当前实际用到的最高层数
+    int count;
+};
+```
+
+```text
+level 3:  H ----------------------> 25 -----------> NULL
+level 2:  H --------> 9 ----------> 25 -----------> NULL
+level 1:  H --> 6 --> 9 --> 17 ---> 25 --> 30 ----> NULL
+level 0:  H --> 6 --> 9 --> 17 ---> 25 --> 30 ----> NULL   <- 最底层是完整有序链
+```
+
+在一条**有序单链表**上，随机给部分节点"加高"建出多层稀疏索引，查找像坐电梯：从最高层往右走，走不动就下沉一层，快速跳过大段节点。
+
+### 4.2 流程树
+
+```text
+查找通用动作：x=header；i 从 level-1 到 0：while 下个 key < 目标 则右移 x；记 update[i]=x
+                最后 x=x->forward[0] 即候选节点
+
+set(key,value)
+├─ 走查找记 update[]（每层的插入前驱）
+├─ 候选 key 命中 -> return 1（已存在，不覆盖）
+├─ random_level() 抛硬币定层高；先 malloc node/strdup key/value/malloc forward（失败回滚）
+├─ 新层高 > 当前 level -> 拔高那几层的 update[i] = header，更新 level
+└─ 逐层接线：node->forward[i]=update[i]->forward[i]; update[i]->forward[i]=node；count++
+get(key)  -> 查找 -> 候选命中返回 value / 否则 NULL
+del(key)  -> 走查找记 update[] -> 候选未命中 return 1
+          -> 逐层解链(前驱 forward 不是 x 就提前停) -> free 四块内存 -> 回收空出的高层 -> count--
+mod(key)  -> 查找 -> strdup 新值 -> free 旧值 -> 替换
+```
+
+### 4.3 随机层高（跳表的灵魂）
+
+```c
+int level = 1;
+while ((rand() & 1) && level < MAX_LEVEL) level++;   // P=0.5：每多一层概率减半
+```
+
+- P=0.5：约 1/2 节点只 1 层、1/4 到 2 层、1/8 到 3 层……期望层数 O(log n)。
+- 不需要旋转、不需要全局重排，**插入时局部抛硬币**就维持了概率平衡。
+- header 的 forward 一次开满 MAX_LEVEL，省得抬高时扩容；`level` 只记当前实际最高层。
+
+### 4.4 核心八股
+
+| 问题 | 答 |
+|---|---|
+| 复杂度 | 增删查**期望 O(log n)**（最坏 O(n)，但概率极低），天然**有序**、范围查询友好 |
+| 为什么能 O(log n) | 高层稀疏（期望层数 O(log n)），自顶向下每层跳过约一半节点，类似二分 |
+| 为什么 Redis zset 用它而不用红黑树 | 实现简单、范围查询/前驱后继顺底层链就走、并发改造容易；红黑树旋转复杂、并发难做 |
+| 删除后为什么要回收 level | 顶部若空出整层，留着会让后续查找在空高层空跑，故 `while header->forward[level-1]==NULL` 降层 |
+| 和红黑树比 | 期望复杂度相同且都有序，跳表靠概率、代码短；红黑树靠确定性平衡、最坏也 O(log n) |
+| 解链为什么能提前 break | 节点只到自己的层高，某层前驱的 forward 已不是 x，更高层也一定不是，无需再看 |
 
 ---
 
-## 5. 一句话总背诵
+## 5. 四引擎横向对比（总归纳）
 
-> KVStore 用统一的 `set/get/del/mod` 接口 + 命令前缀，把数组、哈希、红黑树三个引擎挂在同一套网络/协议层下。
-> 数组顺序存储、查删 O(n)；哈希用 BKDR + 拉链解决冲突、平均 O(1) 但无序；红黑树靠五条性质和旋转保持近似平衡、O(log n) 且天然有序。
-> 三者公共要点是 key/value 深拷贝、失败回滚、SET 不覆盖（改值用 MOD）。
+| 维度 | 数组 array | 哈希 hash | 红黑树 rbtree | 跳表 skiplist |
+|---|---|---|---|---|
+| 查找 | O(n) | 平均 O(1) | O(log n) | 期望 O(log n) |
+| 插入/删除 | O(n)（删要搬移） | 平均 O(1) | O(log n) | 期望 O(log n) |
+| 是否有序 | 插入序 | 无序 | **有序** | **有序** |
+| 范围查询 | 不支持 | 不支持 | 支持 | 支持 |
+| 是否需 init | 否（静态数组） | 是（桶数组 create） | 是（哨兵 nil create） | 是（哨兵 header create） |
+| 平衡方式 | — | — | 确定性（旋转+变色） | 概率（随机层高） |
+| 主要风险 | 容量固定、删除搬移 | 冲突退化、需 rehash | fixup 旋转易写错 | 最坏退化（概率极低） |
 
-## 6. 复习顺序
+---
+
+## 6. 一句话总背诵
+
+> KVStore 用统一的 `set/get/del/mod` 接口 + 命令前缀，把数组、哈希、红黑树、跳表四个引擎挂在同一套网络/协议层下。
+> 数组顺序存储、查删 O(n)；哈希用 BKDR + 拉链解决冲突、平均 O(1) 但无序；红黑树靠五条性质和旋转保持近似平衡、O(log n) 且天然有序；跳表靠随机层高维持概率平衡、期望 O(log n)、有序且范围查询友好。
+> 四者公共要点是 key/value 深拷贝、失败回滚、SET 不覆盖（改值用 MOD）。
+
+## 7. 复习顺序
 
 ```text
 1. 背引擎架构：统一接口 + 命令前缀 + 返回值约定
@@ -215,6 +287,7 @@ case4 兄弟黑且远侄红：变色 + 旋转父亲，补上黑高，结束(x=ro
 5. 背旋转（左旋/右旋保持有序）
 6. 背插入：染红 + 3 个 fixup case
 7. 背删除：后继替换 + 4 个 fixup case
-8. 背三引擎对比表
-9. 背 红黑树 vs AVL vs 跳表 的取舍
+8. 背跳表：多层索引 -> 随机层高(P=0.5) -> 查找 update[] -> 增删接线/解链
+9. 背四引擎对比表
+10. 背 红黑树 vs 跳表 的取舍（确定性平衡 vs 概率平衡）
 ```

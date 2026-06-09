@@ -1,6 +1,6 @@
 CC = gcc
 FLAGS =
-SRCS = kvstore.c epoll_entry.c kvstore_array.c kvstore_rbtree.c kvstore_hash.c
+SRCS = kvstore.c epoll_entry.c kvstore_array.c kvstore_rbtree.c kvstore_hash.c kvstore_skiplist.c
 TARGET = kvstore
 
 OBJS = $(SRCS:.c=.o)
