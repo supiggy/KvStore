@@ -1,0 +1,7 @@
+# 构建产物
+*.o
+/minivec
+
+# 编辑器/系统
+*.swp
+.DS_Store
