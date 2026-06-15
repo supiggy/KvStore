@@ -3,6 +3,7 @@
 #include "engine/index_flat.h"
 #include "engine/index_hnsw.h"
 #include "engine/distance.h"
+#include "engine/persist.h"
 
 #include <stdlib.h>   /* strtoull / strtof / atoi */
 
@@ -38,7 +39,7 @@
 
 /* 对应 kvstore comands[]：命令名字符串表 */
 static const char *commands[] = {
-    "VADD", "VSEARCH", "VDEL", "VCOUNT",
+    "VADD", "VSEARCH", "VDEL", "VCOUNT", "SAVE", "LOAD",
 };
 
 /* 对应 kvstore enum KVS_CMD_*：枚举顺序必须和 commands[] 一一对应 */
@@ -48,6 +49,8 @@ enum {
     MV_CMD_VSEARCH,
     MV_CMD_VDEL,
     MV_CMD_VCOUNT,
+    MV_CMD_SAVE,
+    MV_CMD_LOAD,
     MV_CMD_COUNT,
 };
 
@@ -227,6 +230,25 @@ int minivec_handle_command(minivec_db_t *db, char *line, char *out, int outlen) 
     case MV_CMD_VCOUNT:
         snprintf(out, outlen, "%zu", vstore_count(db->store));
         break;
+
+    /* SAVE <path>  —— 把库落盘(只存裸向量,见 engine/persist.c) */
+    case MV_CMD_SAVE: {
+        if (n < 2) { snprintf(out, outlen, "ERR need path"); return -1; }
+        int rc = minivec_save(db->store, tokens[1]);
+        if (rc < 0) snprintf(out, outlen, "ERR save failed");
+        else        snprintf(out, outlen, "OK %d saved", rc);
+        break;
+    }
+
+    /* LOAD <path>  —— 从盘加载并重建 HNSW(追加到当前库) */
+    case MV_CMD_LOAD: {
+        if (n < 2) { snprintf(out, outlen, "ERR need path"); return -1; }
+        int rc = minivec_load(db->store, db->index, tokens[1]);
+        if (rc == -2)      snprintf(out, outlen, "ERR dim mismatch");
+        else if (rc < 0)   snprintf(out, outlen, "ERR load failed");
+        else               snprintf(out, outlen, "OK %d loaded", rc);
+        break;
+    }
 
     default:
         snprintf(out, outlen, "ERR unknown command");

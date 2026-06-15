@@ -11,11 +11,14 @@
  * 全局配置
  * ============================================================ */
 
-#define MINIVEC_DIM          128      /* 向量维度，全库统一。真实 embedding 常见 768/1536，
-                                         学习阶段用 128 足够，调试快。 */
+/* 向量维度,全库统一,必须和 embedding 模型输出维度一致!
+ *   all-MiniLM-L6-v2 = 384(tools/embed.py 默认用它)
+ *   bge-base = 768, OpenAI text-embedding-3-small = 1536
+ * 换模型就改这一个数,然后重新 make。 */
+#define MINIVEC_DIM          384
 #define MINIVEC_PORT         9097     /* 服务监听端口 */
 #define MINIVEC_MAX_ELEMENTS 1000000  /* 最大向量数 */
-#define MINIVEC_BUFFER_LEN   8192     /* 单条请求/响应缓冲区上限 */
+#define MINIVEC_BUFFER_LEN   16384    /* 单条请求/响应缓冲区;384 维 VADD 一行约 3.5KB */
 
 /* ============================================================
  * 共享类型

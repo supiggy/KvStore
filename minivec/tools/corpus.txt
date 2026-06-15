@@ -1,0 +1,10 @@
+how to train a neural network with gradient descent
+backpropagation computes gradients for deep learning models
+transformers use self attention to process sequences
+the cat sat on the warm windowsill in the sun
+my kitten loves chasing the red laser pointer
+a truck carries heavy cargo across the highway
+diesel engines power most large freight trucks
+vector databases index embeddings for similarity search
+HNSW is a graph based approximate nearest neighbor index
+cosine similarity measures the angle between two vectors

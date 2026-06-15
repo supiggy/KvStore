@@ -137,20 +137,37 @@ static int recv_cb(int fd) {
     }
     connlist[fd].rlen += count;
 
-    /* ★[改1] 业务分发：这是与 kvstore 唯一不同的一行。
-     * kvstore:  kvstore_request(&connlist[fd]);   // 全局引擎，读写都在 item 里
-     * MiniVec:  把读缓冲当命令行、写缓冲当响应，连同 db 一起交给协议层。 */
-    minivec_handle_command(g_db, connlist[fd].rbuffer,
-                           connlist[fd].wbuffer, MINIVEC_BUFFER_LEN);
-    connlist[fd].wlen = (int)strlen(connlist[fd].wbuffer);
+    /* ★[改6] 行分帧(粘包/拆包处理)。
+     * kvstore 假设"一次 recv = 一条完整命令";但 384 维 VADD 一行约 3.5KB,
+     * TCP 会把它拆成多个 segment,导致半条命令被当成一条 → 解析失败。
+     * 这里改成:按 '\n' 切出【完整命令】逐条处理,不完整的半行留到下次 recv 续上。
+     * (对应 项目知识点.md 第10节:长度字段/分隔符 + 状态机。这里用分隔符 '\n'。) */
+    struct conn *c = &connlist[fd];
+    char resp[MINIVEC_BUFFER_LEN];
+    int start = 0;
+    c->wlen = 0;
 
-    /* 处理完一条命令清空读缓冲，否则下一条会和旧数据粘连（与 kvstore 注释同因）。
-     * 同样假设"一次 recv = 一条完整命令"，生产环境要上粘包状态机（项目知识点.md 第10节）。 */
-    connlist[fd].rlen = 0;
-    memset(connlist[fd].rbuffer, 0, MINIVEC_BUFFER_LEN);
+    for (int i = 0; i < c->rlen; i++) {
+        if (c->rbuffer[i] != '\n') continue;
+        c->rbuffer[i] = '\0';                          /* 单独终止这一行 */
+        resp[0] = '\0';
+        minivec_handle_command(g_db, c->rbuffer + start, resp, (int)sizeof(resp));
+        int rl = (int)strlen(resp);
+        if (c->wlen + rl + 1 < MINIVEC_BUFFER_LEN) {   /* 响应 + '\n' 追加到写缓冲 */
+            memcpy(c->wbuffer + c->wlen, resp, rl);
+            c->wlen += rl;
+            c->wbuffer[c->wlen++] = '\n';
+        }
+        start = i + 1;
+    }
 
-    /* 切到关注可写，待会儿在 send_cb 里把响应发出去（与 kvstore 一致） */
-    set_event(fd, EPOLLOUT, 0);
+    /* 把没处理完的半行挪到缓冲区开头,等下次 recv 接上 */
+    int leftover = c->rlen - start;
+    if (leftover > 0 && start > 0) memmove(c->rbuffer, c->rbuffer + start, leftover);
+    c->rlen = leftover;
+
+    /* 只有凑齐了完整命令(有响应)才切到关注可写;只收到半行就继续 EPOLLIN 等后续 */
+    if (c->wlen > 0) set_event(fd, EPOLLOUT, 0);
     return count;
 }
 
