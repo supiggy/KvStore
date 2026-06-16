@@ -222,6 +222,9 @@ int minivec_handle_command(minivec_db_t *db, char *line, char *out, int outlen) 
         if (n < 2) { snprintf(out, outlen, "ERR need id"); return -1; }
         uint64_t id = strtoull(tokens[1], NULL, 10);
         int rc = vstore_del(db->store, id);              /* 对应 kvstore_array_del */
+        if (rc == 0 && db->index) {
+            hnsw_delete(db->index, id);                  /* G1:同步从图里软删(修 §3.3 bug) */
+        }
         snprintf(out, outlen, rc == 0 ? "OK" : "ERR not exist");
         break;
     }

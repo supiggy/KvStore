@@ -29,4 +29,11 @@ int hnsw_search(hnsw_index_t *h, const vec_t *query, int topk, search_result_t *
 /* 运行时调节查询精度/速度的旋钮 */
 void hnsw_set_ef_search(hnsw_index_t *h, int ef);
 
+/* G1:软删除一个 id(打墓碑,仍留在图里当路由,但不再被检索返回)。
+ * 返回 0 成功,-1 未找到。 */
+int hnsw_delete(hnsw_index_t *h, uint64_t id);
+
+/* G1:当前墓碑(已删)节点数。 */
+int hnsw_deleted_count(hnsw_index_t *h);
+
 #endif /* MINIVEC_INDEX_HNSW_H */

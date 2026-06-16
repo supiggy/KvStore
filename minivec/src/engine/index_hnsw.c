@@ -24,6 +24,7 @@ struct hnsw_node {
     uint64_t  id;
     vec_t    *vec;             /* HNSW 自己拥有一份拷贝(COSINE 下已归一化) */
     int       level;          /* 该点最高层 [0, level] */
+    int       deleted;        /* G1:软删墓碑标记(1=已删)。仍留在图里当路由跳板 */
     int      *neighbors;      /* 扁平存各层邻居下标,层 L 的块 = neighbors + L*Mcap */
     int      *neighbor_count; /* 每层当前邻居数,长度 level+1 */
 };
@@ -40,6 +41,7 @@ struct hnsw_index {
 
     struct hnsw_node *nodes;
     int       node_count;
+    int       deleted_count;   /* G1:墓碑(软删)节点数,供上层决定何时重建 */
     int       capacity;
     int       entry_point;     /* 入口点下标,空图为 -1 */
     int       max_level;       /* 当前最高层,空图为 -1 */
@@ -64,6 +66,15 @@ static float hnsw_dist(const struct hnsw_index *h, const vec_t *a, const vec_t *
 
 static int *node_neighbors(struct hnsw_index *h, int node, int layer) {
     return h->nodes[node].neighbors + (size_t)layer * h->Mcap;
+}
+
+/* 线性扫描:id → 节点下标,找不到返回 -1。
+ * (起步 O(N) 扫描;要 O(1) 可加 id→下标 哈希,与 vector_store 同款局限) */
+static int hnsw_find_node(struct hnsw_index *h, uint64_t id) {
+    for (int i = 0; i < h->node_count; i++) {
+        if (h->nodes[i].id == id) return i;
+    }
+    return -1;
 }
 
 /* ============================================================
@@ -202,6 +213,7 @@ hnsw_index_t *hnsw_create(const hnsw_params_t *p) {
     h->mL = 1.0 / log((double)M);
     h->capacity = p->max_elements;
     h->node_count = 0;
+    h->deleted_count = 0;
     h->entry_point = -1;
     h->max_level = -1;
     h->cur_tag = 0;
@@ -246,6 +258,7 @@ int hnsw_insert(hnsw_index_t *hh, uint64_t id, const vec_t *vec) {
     struct hnsw_node *node = &h->nodes[nd];
     node->id = id;
     node->level = level;
+    node->deleted = 0;
     node->vec = (vec_t *)malloc((size_t)h->dim * sizeof(vec_t));
     node->neighbors = (int *)malloc((size_t)(level + 1) * h->Mcap * sizeof(int));
     node->neighbor_count = (int *)calloc((size_t)(level + 1), sizeof(int));
@@ -315,12 +328,44 @@ int hnsw_search(hnsw_index_t *hh, const vec_t *query, int topk, search_result_t 
     int cnt = search_layer(h, query, ep, ef, 0);
     qsort(h->scratch_W, cnt, sizeof(struct cand), cand_cmp_asc);  /* 近→远 */
 
-    int n = (cnt < topk) ? cnt : topk;
-    for (int i = 0; i < n; i++) {
-        out[i].id = h->nodes[h->scratch_W[i].node].id;
-        out[i].score = -h->scratch_W[i].dist;   /* 距离取负 → 还原成"越大越相似" */
+    /* 取 topk:scratch_W 已按 近→远 排好。
+     * ★ 留白(G1 修 bug):跳过墓碑(已删)节点。
+     *   现状(没填)= 老行为:已删节点照样被返回 → 这就是 DESIGN §3.3 的 bug。
+     *   只要在下面循环里加一行:若 h->nodes[node].deleted 则 continue。
+     * 要点:
+     *   - 删除的节点仍被 search_layer 遍历(当路由跳板),只是不放进结果 —— 软删的关键。
+     *   - 删得多时,前 ef 个候选里活节点可能不足 topk → 返回数 < topk;
+     *     真要补满需调大 ef_search(进阶,先不管)。
+     * TODO(你填): 在循环里加 "若该节点已删则 continue"。 */
+    int n = 0;
+    for (int i = 0; i < cnt && n < topk; i++) {
+        int node = h->scratch_W[i].node;
+        /* TODO(你填): if (h->nodes[node].deleted) continue; */
+        out[n].id    = h->nodes[node].id;
+        out[n].score = -h->scratch_W[i].dist;   /* 距离取负 → 还原成"越大越相似" */
+        n++;
     }
     return n;
+}
+
+/* G1:软删 —— 标记墓碑。节点仍留在图里被遍历,但 hnsw_search 不再返回它
+ * (前提:你已填上面 hnsw_search 的过滤留白)。返回 0 成功,-1 未找到。 */
+int hnsw_delete(hnsw_index_t *hh, uint64_t id) {
+    struct hnsw_index *h = (struct hnsw_index *)hh;
+    if (h == NULL) return -1;
+    int nd = hnsw_find_node(h, id);
+    if (nd < 0) return -1;
+    if (!h->nodes[nd].deleted) {
+        h->nodes[nd].deleted = 1;
+        h->deleted_count++;
+    }
+    return 0;
+}
+
+/* G1:当前墓碑数(上层据此决定是否重建索引) */
+int hnsw_deleted_count(hnsw_index_t *hh) {
+    struct hnsw_index *h = (struct hnsw_index *)hh;
+    return h ? h->deleted_count : 0;
 }
 
 void hnsw_set_ef_search(hnsw_index_t *hh, int ef) {

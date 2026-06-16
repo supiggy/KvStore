@@ -30,5 +30,6 @@ extern int mv_tests_failed;
 void test_distance_suite(void);
 void test_vstore_suite(void);
 void test_flat_suite(void);
+void test_hnsw_delete_suite(void);
 
 #endif /* MV_TEST_FRAMEWORK_H */

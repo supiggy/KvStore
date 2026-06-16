@@ -39,22 +39,24 @@
 - **【骨架】** 单测框架(distance/vstore/flat 正确性用例)、造数脚本、QPS/p99 压测客户端、flat-vs-hnsw recall sanity check。
 - **【核心】** 具体断言、p99 百分位统计、压测并发逻辑。
 - **【谈资】** 为什么重构前先立基线;p99 为什么比平均值有意义。
-- 状态:**骨架已搭**(`make test` 9/9 绿;`make bench` 端到端可跑)。**留白待你填**:`bench/bench_engine.c` 的 `percentile()` 与 `recall_at_k()`;`tests/` 里 5 处 `TODO` 断言(distance 归一化、cosine=归一化后 dot;vstore 删除墓碑、重复 id 拒绝;flat top-2 顺序)。
-- 文件:`tests/`(框架+3 套单测)、`bench/`(gen + 引擎基准)、`Makefile`(test/bench 目标,只链引擎不依赖 epoll)。
+- 状态:**骨架已搭**(`make test` 9/9 绿;`make bench` 端到端可跑)。**留白待你填**:`bench/metrics.c` 的 `percentile()` 与 `recall_at_k()`(G6 已抽成共享,填一次两个基准都用);`tests/` 里 5 处 `TODO` 断言(distance 归一化、cosine=归一化后 dot;vstore 删除墓碑、重复 id 拒绝;flat top-2 顺序)。
+- 文件:`tests/`(框架+3 套单测)、`bench/`(gen + metrics + 引擎基准)、`Makefile`(test/bench 目标,只链引擎不依赖 epoll)。
 
 ### G6 · recall@K 基准 + 曲线 〔核心交付〕
 - **目标:** 用 flat 当 ground truth 量 HNSW recall,扫 M/ef 出 recall–latency 曲线,填进 README 性能表。
 - **【骨架】** benchmark 框架、ground-truth 生成、参数扫描骨架、出图脚本。
 - **【核心】** recall@K 计算、参数扫描循环。
 - **【谈资】** recall 定义、recall–latency 三角、M/ef 调参。
-- 状态:`未开始`
+- 状态:**骨架已搭**(`make sweep` 可跑、产 `bench/results.csv`;`plot_recall.py` 出 recall–QPS 曲线)。**留白待你填**:`bench/sweep.c` main 里的【扫描循环】(外层 M 重建图、内层 ef_search 复用),外加 G0 共享的 `percentile`/`recall_at_k`。
+- 文件:`bench/metrics.{h,c}`(共享指标)、`bench/sweep.c`(`build_hnsw`+`measure_queries` 已填)、`bench/plot_recall.py`(出图)、`Makefile` `sweep` 目标。
 
 ### G1 · HNSW 删除 〔正确性,优先〕
 - **目标:** 修 DESIGN §3.3 的 bug——VDEL 后 VSEARCH 仍返回已删向量。tombstone 软删 + VDEL 接通索引 + 空间回收/重建。
 - **【骨架】** vstore 删除标记接口(已有墓碑)、HNSW `delete` API 桩、重建触发骨架。
 - **【核心】** 搜索时过滤 tombstone、重建/compaction、重建时邻居重连。
 - **【谈资】** 图索引删除为何难、软删 vs 硬删、墓碑堆积与重建时机。
-- 状态:`未开始`
+- 状态:**骨架已搭**(`make all` 全量编译过;`make test` 14 项里 **1 项故意红** = 复现了 §3.3 的 bug)。已填:`hnsw_delete`/`hnsw_deleted_count`、节点 `deleted` 标记、parser `VDEL` 同步软删、TDD 红测试。**留白待你填**:`hnsw_search` 里加一行"跳过墓碑节点"(填完 `test_hnsw_delete` 转绿 = G1 完成)。**进阶留白**:墓碑堆积后的重建/compaction(用 `hnsw_deleted_count` 判定阈值,在 db 层 destroy+重建+重灌 live,参考 `minivec_load`)。
+- 文件:`src/engine/index_hnsw.{c,h}`、`src/protocol/parser.c`、`tests/test_hnsw_delete.c`。
 
 ### G2 · 崩溃安全持久化 / WAL
 - **目标:** persist 现在只有手动全量快照(原子 rename 已做),无 WAL → 未 SAVE 即崩溃丢增量。加 WAL + 启动回放 + 快照截断。
