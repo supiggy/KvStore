@@ -1,3 +1,5 @@
+#define _GNU_SOURCE          /* 暴露 pipe/fcntl/read/write 等 POSIX/GNU 接口 */
+
 #include "net/server.h"
 #include "common/minivec.h"
 
@@ -6,52 +8,54 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <stdio.h>
+#include <fcntl.h>
 #include <sys/epoll.h>
+#include <pthread.h>
 
 /* ============================================================================
- * 网络层  ——  直接照搬 kvstore 的 epoll_entry.c
+ * 网络层 —— G4:主从 Reactor(multi-reactor / one-loop-per-thread)
  * ----------------------------------------------------------------------------
- * 这一层你在 kvstore 已经吃透，所以这里是"搬运 + 标注改动"，不是新东西。
+ * 从 G0~G3 的【单 reactor 单线程】升级为【主从多线程】:
  *
- * 对应关系（kvstore 文件: epoll_entry.c / kvstore.h）：
- *   kvstore                         MiniVec                       说明
- *   --------------------------------------------------------------------------
- *   struct conn_item (kvstore.h)    struct conn (本文件)          一样的 fd+读写缓冲+回调
- *   RCALLBACK                       mv_callback_t                 一样的回调函数指针类型
- *   connlist[1048576] (全局)        connlist[MV_MAX_CONN] (全局)  一样按 fd 下标存连接
- *   set_event / accept_cb /         同名函数                      逻辑一字不改
- *     recv_cb / send_cb
- *   init_server / epoll_entry       init_server /                 同一套 socket→bind→listen→loop
- *                                     minivec_server_start
- *   kvstore_request(&connlist[fd])  minivec_handle_command(...)   ★ 唯一的业务分发改动
+ *   原来(单线程):  一个 epoll 既 accept 又收发,HNSW 操作阻塞整个事件循环。
+ *   现在(主从):
+ *       主线程   : 只 accept,把新连接【轮流】投递给某个 worker。
+ *       worker×N : 各自一个 epoll,只服务分给自己的连接,调 minivec_handle_command。
+ *                  因为多个 worker 会并发碰同一个 db,所以引擎必须线程安全 —— 那是 G3。
  *
- * 改动点（务必看清）：
- *   [改1] 业务分发：kvstore 在 recv_cb 里调 kvstore_request(item)（用全局引擎，
- *         读 item->rbuffer / 写 item->wbuffer）；MiniVec 改成
- *         minivec_handle_command(g_db, rbuffer, wbuffer, len)，把 db 显式传进去。
- *   [改2] 缓冲区：kvstore BUFFER_LENGTH=512；MiniVec 用 MINIVEC_BUFFER_LEN=8192，
- *         因为一条 VADD 命令含 128 个浮点文本，512 根本装不下。
- *   [改3] db 注入：kvstore 引擎是全局的；MiniVec 的 db 由 server_start 参数传入，
- *         本文件用一个 static 全局 g_db 承接，让回调函数能拿到它。
- *   [改4] 端口：kvstore demo 为压测开了 20 个端口(2048~2067)；MiniVec 简化成 1 个。
- *   [改5] recv 返回值：补了 count<0 的处理（kvstore 没处理，见 项目知识点.md 13.3）。
+ * 跨线程怎么把"新连接"交给 worker?
+ *   每个 worker 有一根管道(pipe)。主线程 accept 到 connfd 后,把这个整数【写进】
+ *   目标 worker 的管道;worker 的 epoll 监听着管道读端,被唤醒后【读出】connfd 并
+ *   注册到自己的 epoll。—— 不直接跨线程 epoll_ctl 别人的 epoll,而是把"事件"投递给
+ *   属主线程自己处理,这就是 one-loop-per-thread 解耦的经典做法。
+ *
+ * ★ G4 两处留白(你填,见下方 worker_loop 的留白 B 和 server_start 的留白 A):
+ *     A. 主线程把 connfd 写进 worker 的管道
+ *     B. worker 从管道读出 connfd 并 worker_register
+ *   没填 A/B:连接能 accept 但无人接管(不会被服务)。填好后才真正跑起来。
+ *   另:多线程下务必先填 G3 的读写锁,否则数据竞争。
+ *
+ * 改动点(相对单线程版):
+ *   [改A] set_event 多了 epfd 参数(每个 worker 一个 epoll)。
+ *   [改B] struct conn 多了 epfd 字段:连接记得自己属于哪个 worker 的 epoll,
+ *         好在 recv/send 里重新挂 EPOLLIN/EPOLLOUT。
+ *   [改C] accept 不再走回调,主线程直接阻塞 accept。
  * ============================================================================ */
 
-/* 对应 kvstore RCALLBACK (kvstore.h) */
 typedef int (*mv_callback_t)(int fd);
 
-/* [改2] 对应 kvstore connlist[1048576]；因单连接缓冲变大(8192*2)，这里缩小上限 */
-#define MV_MAX_CONN 4096
+#define MV_MAX_CONN     4096
+#define MV_NUM_WORKERS  4
 
-/* 对应 kvstore struct conn_item：同样 fd + 读写缓冲 + 回调，仅 buffer 变大 */
+/* 一条连接:多了 epfd(所属 worker 的 epoll) */
 struct conn {
     int  fd;
+    int  epfd;                 /* [改B] 本连接所属 worker 的 epoll */
     char rbuffer[MINIVEC_BUFFER_LEN];
     int  rlen;
     char wbuffer[MINIVEC_BUFFER_LEN];
     int  wlen;
-    /* 监听 fd 用 accept_callback，连接 fd 用 recv_callback，二者共用一块内存（union），
-     * 这正是 kvstore 那个"主循环统一调 recv_t.xxx_callback"的小技巧。 */
     union {
         mv_callback_t accept_callback;
         mv_callback_t recv_callback;
@@ -59,133 +63,132 @@ struct conn {
     mv_callback_t send_callback;
 };
 
-/* 对应 kvstore epoll_entry.c 里的全局 epfd / connlist */
-static int epfd = 0;
+/* 全局按 fd 下标存连接(fd 全进程唯一,注册后只被属主 worker 读写,无需加锁) */
 static struct conn connlist[MV_MAX_CONN];
-
-/* [改3] 对应 kvstore 的"全局引擎"。MiniVec 把 db 收在这里，供回调使用。 */
 static minivec_db_t *g_db = NULL;
 
-/* 前置声明：accept_cb 内部要引用 recv_cb / send_cb。
- * 对应 kvstore epoll_entry.c 顶部那三行 accept_cb/recv_cb/send_cb 声明。 */
-static int accept_cb(int fd);
+/* 一个 worker(从 reactor) */
+struct worker {
+    int       id;
+    int       epfd;            /* 自己的 epoll */
+    int       pipe_r;          /* 主线程写 pipe_w,本线程从 pipe_r 读新连接 fd */
+    int       pipe_w;
+    pthread_t tid;
+};
+static struct worker workers[MV_NUM_WORKERS];
+
 static int recv_cb(int fd);
 static int send_cb(int fd);
 
-/* set_event —— 与 kvstore 完全一致：flag=1 添加事件，flag=0 修改事件 */
-static int set_event(int fd, int event, int flag) {
+/* [改A] set_event:带 epfd —— flag=1 添加事件,flag=0 修改事件 */
+static int set_event(int epfd, int fd, int event, int flag) {
     struct epoll_event ev;
     ev.events  = event;
     ev.data.fd = fd;
-    if (flag) {
-        return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
-    } else {
-        return epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
-    }
+    return flag ? epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev)
+                : epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
 }
 
-/* accept_cb —— 对应 kvstore accept_cb：监听 fd 可读 = 有新连接 */
-static int accept_cb(int fd) {
-    struct sockaddr_in clientaddr;
-    socklen_t len = sizeof(clientaddr);
-
-    int clientfd = accept(fd, (struct sockaddr *)&clientaddr, &len);
-    if (clientfd < 0) {
-        return -1;
-    }
-    /* MiniVec 安全补丁：kvstore 直接 connlist[clientfd]，fd 超界会越界写。
-     * 连接数受 MV_MAX_CONN 限制，超了就拒绝。 */
-    if (clientfd >= MV_MAX_CONN) {
-        close(clientfd);
-        return -1;
-    }
-
-    set_event(clientfd, EPOLLIN, 1);
-
-    /* 初始化该连接：清空读写缓冲、挂上 recv/send 回调（与 kvstore 一致） */
-    connlist[clientfd].fd   = clientfd;
-    memset(connlist[clientfd].rbuffer, 0, MINIVEC_BUFFER_LEN);
-    connlist[clientfd].rlen = 0;
-    memset(connlist[clientfd].wbuffer, 0, MINIVEC_BUFFER_LEN);
-    connlist[clientfd].wlen = 0;
-    connlist[clientfd].recv_t.recv_callback = recv_cb;
-    connlist[clientfd].send_callback        = send_cb;
-
-    return clientfd;
-}
-
-/* recv_cb —— 对应 kvstore recv_cb：连接 fd 可读 = 收数据 */
+/* recv_cb —— 收数据 + 行分帧(逻辑同单线程版,只是 set_event 用 c->epfd) */
 static int recv_cb(int fd) {
-    char *buffer = connlist[fd].rbuffer;
-    int   idx    = connlist[fd].rlen;
-
-    int count = recv(fd, buffer + idx, MINIVEC_BUFFER_LEN - idx, 0);
-    if (count == 0) {
-        /* 对端关闭：DEL + close，与 kvstore 一致 */
-        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-        close(fd);
-        return -1;
-    }
-    /* [改5] kvstore 没处理 count<0；非阻塞下 EAGAIN 表示读空，其它错误则断开 */
-    if (count < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;
-        }
-        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-        close(fd);
-        return -1;
-    }
-    connlist[fd].rlen += count;
-
-    /* ★[改6] 行分帧(粘包/拆包处理)。
-     * kvstore 假设"一次 recv = 一条完整命令";但 384 维 VADD 一行约 3.5KB,
-     * TCP 会把它拆成多个 segment,导致半条命令被当成一条 → 解析失败。
-     * 这里改成:按 '\n' 切出【完整命令】逐条处理,不完整的半行留到下次 recv 续上。
-     * (对应 项目知识点.md 第10节:长度字段/分隔符 + 状态机。这里用分隔符 '\n'。) */
     struct conn *c = &connlist[fd];
+    int count = recv(fd, c->rbuffer + c->rlen, MINIVEC_BUFFER_LEN - c->rlen, 0);
+    if (count == 0) {
+        epoll_ctl(c->epfd, EPOLL_CTL_DEL, fd, NULL);
+        close(fd);
+        return -1;
+    }
+    if (count < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        epoll_ctl(c->epfd, EPOLL_CTL_DEL, fd, NULL);
+        close(fd);
+        return -1;
+    }
+    c->rlen += count;
+
+    /* 行分帧:按 '\n' 切完整命令逐条处理,半行留到下次 recv 续上 */
     char resp[MINIVEC_BUFFER_LEN];
     int start = 0;
     c->wlen = 0;
-
     for (int i = 0; i < c->rlen; i++) {
         if (c->rbuffer[i] != '\n') continue;
-        c->rbuffer[i] = '\0';                          /* 单独终止这一行 */
+        c->rbuffer[i] = '\0';
         resp[0] = '\0';
         minivec_handle_command(g_db, c->rbuffer + start, resp, (int)sizeof(resp));
         int rl = (int)strlen(resp);
-        if (c->wlen + rl + 1 < MINIVEC_BUFFER_LEN) {   /* 响应 + '\n' 追加到写缓冲 */
+        if (c->wlen + rl + 1 < MINIVEC_BUFFER_LEN) {
             memcpy(c->wbuffer + c->wlen, resp, rl);
             c->wlen += rl;
             c->wbuffer[c->wlen++] = '\n';
         }
         start = i + 1;
     }
-
-    /* 把没处理完的半行挪到缓冲区开头,等下次 recv 接上 */
     int leftover = c->rlen - start;
     if (leftover > 0 && start > 0) memmove(c->rbuffer, c->rbuffer + start, leftover);
     c->rlen = leftover;
 
-    /* 只有凑齐了完整命令(有响应)才切到关注可写;只收到半行就继续 EPOLLIN 等后续 */
-    if (c->wlen > 0) set_event(fd, EPOLLOUT, 0);
+    if (c->wlen > 0) set_event(c->epfd, fd, EPOLLOUT, 0);
     return count;
 }
 
-/* send_cb —— 与 kvstore 一致：发完响应切回关注可读 */
+/* send_cb —— 发完响应切回关注可读 */
 static int send_cb(int fd) {
-    int count = send(fd, connlist[fd].wbuffer, connlist[fd].wlen, 0);
-    set_event(fd, EPOLLIN, 0);
+    struct conn *c = &connlist[fd];
+    int count = send(fd, c->wbuffer, c->wlen, 0);
+    set_event(c->epfd, fd, EPOLLIN, 0);
     return count;
 }
 
-/* init_server —— 对应 kvstore init_server：socket→bind→listen */
+/* 把新连接注册到 worker 的 epoll(已填,机械活)。
+ * 由 worker 线程自己调用(在留白 B 里),所以 connlist[connfd] 只被属主线程写。 */
+static void worker_register(struct worker *w, int connfd) {
+    if (connfd < 0 || connfd >= MV_MAX_CONN) {
+        if (connfd >= 0) close(connfd);
+        return;
+    }
+    struct conn *c = &connlist[connfd];
+    c->fd   = connfd;
+    c->epfd = w->epfd;
+    memset(c->rbuffer, 0, MINIVEC_BUFFER_LEN); c->rlen = 0;
+    memset(c->wbuffer, 0, MINIVEC_BUFFER_LEN); c->wlen = 0;
+    c->recv_t.recv_callback = recv_cb;
+    c->send_callback        = send_cb;
+    set_event(w->epfd, connfd, EPOLLIN, 1);
+}
+
+/* worker(从 reactor)主循环:自己的 epoll 上跑 recv/send,并接收主线程投递的新连接 */
+static void *worker_loop(void *arg) {
+    struct worker *w = (struct worker *)arg;
+    struct epoll_event events[1024];
+    while (1) {
+        int nready = epoll_wait(w->epfd, events, 1024, -1);
+        for (int i = 0; i < nready; i++) {
+            int fd = events[i].data.fd;
+
+            if (fd == w->pipe_r) {
+                /* ★ 留白 B(G4):主线程把新连接 fd 写进管道,这里读出来注册到本 worker。
+                 * 流程树:
+                 *   int connfd;
+                 *   while (read(w->pipe_r, &connfd, sizeof(connfd)) == (ssize_t)sizeof(connfd))
+                 *       worker_register(w, connfd);
+                 *   (pipe_r 非阻塞:一次可能积压多个 fd,循环读到读空为止)
+                 * TODO(你填) */
+                (void)worker_register;   /* 填完留白 B 后这行可删 */
+                continue;
+            }
+
+            if (events[i].events & EPOLLIN)        connlist[fd].recv_t.recv_callback(fd);
+            else if (events[i].events & EPOLLOUT)  connlist[fd].send_callback(fd);
+        }
+    }
+    return NULL;
+}
+
+/* init_server —— socket→bind→listen(同单线程版) */
 static int init_server(unsigned short port) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("socket");
-        return -1;
-    }
-    /* MiniVec 小改进：开 SO_REUSEADDR，方便反复重启调试（kvstore 没开） */
+    if (sockfd < 0) { perror("socket"); return -1; }
+
     int opt = 1;
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -196,47 +199,58 @@ static int init_server(unsigned short port) {
     serveraddr.sin_port        = htons(port);
 
     if (bind(sockfd, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) < 0) {
-        perror("bind");
-        close(sockfd);
-        return -1;
+        perror("bind"); close(sockfd); return -1;
     }
-    listen(sockfd, 10);
+    listen(sockfd, 128);
     return sockfd;
 }
 
-/* minivec_server_start —— 对应 kvstore epoll_entry()
- * 改动：单端口；db 用参数注入（存进 g_db）。主循环逻辑与 kvstore 一字不差。 */
 int minivec_server_start(int port, minivec_db_t *db) {
-    g_db = db;                       /* [改3] 承接注入的 db */
+    g_db = db;
 
-    epfd = epoll_create(1);
-    if (epfd < 0) {
-        perror("epoll_create");
-        return -1;
+    int sockfd = init_server((unsigned short)port);
+    if (sockfd < 0) return -1;
+
+    /* 起 N 个 worker:各自 epoll + 一根接新连接的管道 */
+    for (int i = 0; i < MV_NUM_WORKERS; i++) {
+        struct worker *w = &workers[i];
+        w->id   = i;
+        w->epfd = epoll_create(1);
+        if (w->epfd < 0) { perror("epoll_create"); return -1; }
+
+        int pp[2];
+        if (pipe(pp) < 0) { perror("pipe"); return -1; }
+        w->pipe_r = pp[0];
+        w->pipe_w = pp[1];
+        fcntl(w->pipe_r, F_SETFL, O_NONBLOCK);       /* 非阻塞,便于循环读干净 */
+        set_event(w->epfd, w->pipe_r, EPOLLIN, 1);   /* worker 监听管道读端 */
+
+        pthread_create(&w->tid, NULL, worker_loop, w);
     }
 
-    int sockfd = init_server((unsigned short)port);   /* [改4] 单端口 */
-    if (sockfd < 0 || sockfd >= MV_MAX_CONN) {
-        return -1;
-    }
-    connlist[sockfd].fd = sockfd;
-    connlist[sockfd].recv_t.accept_callback = accept_cb;  /* 监听 fd 挂 accept 回调 */
-    set_event(sockfd, EPOLLIN, 1);
+    printf("[minivec] %d workers, listening on port %d\n", MV_NUM_WORKERS, port);
 
-    /* 主循环 —— 与 kvstore epoll_entry 的 while(1) 完全一致：
-     * 可读就调 recv_t.recv_callback（监听 fd 是 accept_cb，连接 fd 是 recv_cb），
-     * 可写就调 send_callback。 */
-    struct epoll_event events[1024] = {0};
+    /* 主线程:只 accept,然后把连接【轮流】(round-robin)分给 worker */
+    int rr = 0;
     while (1) {
-        int nready = epoll_wait(epfd, events, 1024, -1);
-        for (int i = 0; i < nready; i++) {
-            int connfd = events[i].data.fd;
-            if (events[i].events & EPOLLIN) {
-                connlist[connfd].recv_t.recv_callback(connfd);
-            } else if (events[i].events & EPOLLOUT) {
-                connlist[connfd].send_callback(connfd);
-            }
-        }
+        struct sockaddr_in cli;
+        socklen_t len = sizeof(cli);
+        int connfd = accept(sockfd, (struct sockaddr *)&cli, &len);
+        if (connfd < 0) continue;
+        if (connfd >= MV_MAX_CONN) { close(connfd); continue; }
+
+        struct worker *w = &workers[rr];
+        rr = (rr + 1) % MV_NUM_WORKERS;
+
+        /* ★ 留白 A(G4):把 connfd 交给 worker w —— 写进它的管道。
+         * 流程树:
+         *   write(w->pipe_w, &connfd, sizeof(connfd));
+         *   worker 的 epoll 会因管道可读而醒,在留白 B 里 worker_register 它。
+         * 为什么不在主线程直接 set_event(w->epfd, connfd,...)?
+         *   跨线程改别人 epoll/连接状态容易竞争;把 fd "投递"给属主线程自己注册更干净。
+         * TODO(你填) */
+        (void)w;   /* 填完留白 A 后这行可删 */
+        /* 提示:留白 A/B 都没填时,连接被 accept 后无人接管(也没人服务) */
     }
     return 0;
 }

@@ -70,14 +70,16 @@
 - **【骨架】** RW 锁封装、分片结构骨架、路由桩。
 - **【核心】** 锁粒度、分片路由、并发不变量、死锁规避。
 - **【谈资】** 读写锁、分片降争用、Redis 为何单线程、有锁 vs 无锁。
-- 状态:`未开始`
+- 状态:**骨架已搭**(`make all` 编译过)。已填:db 加 `pthread_rwlock_t` + init/destroy;读命令(VSEARCH/VCOUNT/SAVE)与写命令(VADD/VDEL/LOAD)分别在引擎操作【外层】加读/写锁(call site 已布好,临界区最小,锁外解析/格式化)。**留白待你填**:`db_read_lock`/`db_write_lock`/`db_unlock` 三个函数体(即 `pthread_rwlock_rdlock`/`wrlock`/`unlock` 三行)。**进阶留白**:分片锁(按 id 分 N 片各一把锁,降低写串行化争用)。
+- 文件:`src/protocol/parser.c`。
 
 ### G4 · 主从 Reactor 多线程 〔war story 候选〕
 - **目标:** server 现在单 reactor 单线程,HNSW 操作阻塞事件循环。改主 reactor accept + 从 reactor 线程池处理 IO(配合 G3)。
 - **【骨架】** 线程模型骨架、accept→分发、每线程一个 epoll。
 - **【核心】** 连接分发/负载均衡、线程间唤醒、连接归属。
 - **【谈资】** 主从 reactor、惊群与 EPOLLEXCLUSIVE、one-loop-per-thread。
-- 状态:`未开始`
+- 状态:**骨架已搭**(`make all` 编译过)。已填:N 个 worker 各自 epoll + 一根管道、`worker_loop`、`worker_register`、主线程 round-robin accept、recv/send 行分帧改用连接自带的 `epfd`。**留白待你填**:跨线程把新连接交给 worker —— 留白 A(主线程 `write(w->pipe_w, &connfd, ...)`)+ 留白 B(worker 从非阻塞 `pipe_r` 循环读出 connfd 并 `worker_register`)。填完 A/B + G3 的锁,多线程才真正跑通。
+- 文件:`src/net/server.c`。
 
 ### G7 · int8 标量量化 〔war story 候选〕
 - **目标:** float32 → int8,内存 1/4(minivec.h 已埋点),用 G6 量精度损失。
