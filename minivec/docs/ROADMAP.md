@@ -1,110 +1,118 @@
-# MiniVec 实现路线图 & 主数据流
+# MiniVec 演进路线图(goal 总纲)
 
-这份文档是「脚手架 → 成品」的施工图。每个模块的细节流程树写在对应 `.c` 文件的函数注释里，
-这里只给**全局架构、模块依赖、实现顺序、主数据流、留白难点清单**。
-
----
-
-## 1. 模块依赖（自底向上）
-
-```text
-common/minivec.h        全局类型与配置（被所有模块依赖）
-        │
-   engine/distance      距离与归一化（最底层，纯数学）
-        │
-   engine/vector_store  id -> 向量 存储（依赖 distance 做归一化）
-        │
-   ┌────┴─────────────┐
-engine/index_flat   engine/index_hnsw   两种检索索引（基线 vs 加速）
-   └────┬─────────────┘
-   protocol/parser      把文本命令翻译成对引擎的调用
-        │
-   net/server           epoll 事件循环，收发字节流
-        │
-   main.c               组装：init engine -> start server -> cleanup
-```
+> 核心引擎已全部实现并可运行。这份文档**不是"怎么把功能做完"**,而是**"怎么让它从练手项目变成有工程判断力的证据"**。
+> 配套设计取舍见 [../DESIGN.md](../DESIGN.md)。
 
 ---
 
-## 2. 推荐实现顺序（每步都能独立验证）
+## 0. 毕业标准(满足 = 不再是练手)
 
-| 步 | 模块 | 目标 | 验证方式 |
-|----|------|------|----------|
-| 1 | `distance.c` | 实现 dot / l2 / cosine / normalize | 单元测试：和手算结果对比 |
-| 2 | `vector_store.c` | id→向量 的增删查 | 插入几条再 get 出来 |
-| 3 | `index_flat.c` | 暴力 topK 检索（**正确性基线**） | 小数据集肉眼验证 |
-| 4 | `parser.c` | VADD/VSEARCH/VDEL 解析分发 | 拼命令字符串调 handle |
-| 5 | `server.c` | epoll 收发（你已掌握，快速填） | nc 连上跑命令 |
-| 6 | `index_hnsw.c` | ★ HNSW 建图 + 查询 | **用 flat 当标准答案算 recall@K** |
-| 7 | `persist`（待加） | 落盘 / 重启加载 | 重启后数据还在 |
+做到这 5 条,这个项目就"出师"了。**功能更少但满足这 5 条 > 功能很多但一条不沾。**
 
-> 黄金法则：**第 6 步 HNSW 之前，第 3 步暴力检索必须先正确**。
-> 因为 HNSW 是近似算法，"错"和"对"看起来都"差不多对"，没有基线你无法判断对错。
+- [ ] 仓库 README 第一屏是**一张性能表**(已就位,数字待 G6 填),不是"学习项目"四个字。
+- [ ] 有 `bench/`,**一条命令能复现**那些数字,并产出一张图(recall–ef / QPS–线程)。
+- [ ] 有 `DESIGN.md`(已就位):为什么这么选 / 已知局限 / 10 亿向量下怎么改。
+- [ ] 至少 **1 个有 before/after 数字的优化故事**写进文档(war story)。
+- [ ] 跟 **Faiss / hnswlib 做过一次诚实对标**,知道自己差在哪、为什么。
 
 ---
 
-## 3. 主数据流（两条核心链路）
+## 1. 优先级:为什么不是"把 goal 全做完"
 
-### 3.1 VADD 写入链路
+| 层级 | goal | 理由 |
+|------|------|------|
+| **核心交付**(先做) | G0 基准 + G6 recall | 直接产出毕业标准里的数字和曲线。没有它,后面所有改动都无法验证对错/快慢 |
+| **挑 1 个深做**(出 war story) | G3/G4(并发,"阻塞 IO 线程"是天然故事) 或 G7/G8(量化,"内存降 4x recall 只掉 2%"是天然取舍) | 深度故事 > 功能数量 |
+| **正确性补全** | G1(删除 bug)、G2(WAL) | G1 是真 bug(见 DESIGN §3.3),优先级高 |
+| **后置**(不产出数字/故事就先放着) | G5 协议、G9 过滤 | 纯功能,锦上添花 |
 
-```text
-客户端发 "VADD 1 0.1 0.2 ... 0.9\r\n"
-   │
-net/server: epoll 读到字节
-   │
-protocol/parser: 切 token
-   ├─ tokens[0] = "VADD"
-   ├─ tokens[1] = id
-   └─ tokens[2..] = DIM 个 float  ── 解析成 vec_t[DIM]
-   │
-engine/vector_store: vstore_add(id, vec, meta)
-   ├─ (COSINE 度量) vec_normalize(vec)        ← 调 distance
-   ├─ 拷贝一份向量到内部存储
-   └─ 记录 id -> 下标 映射
-   │
-engine/index_hnsw: hnsw_insert(id, vec)       ← 同时插入索引（建图）
-   │
-parser 写响应 "OK" -> server 发回客户端
-```
-
-### 3.2 VSEARCH 查询链路
-
-```text
-客户端发 "VSEARCH 10 0.1 0.2 ... 0.88\r\n"   (找最相似的 10 个)
-   │
-net/server -> protocol/parser
-   ├─ tokens[1] = topk = 10
-   └─ tokens[2..] = 查询向量 query[DIM]
-   │
-(COSINE) vec_normalize(query)
-   │
-检索（二选一）：
-   ├─ index_flat.flat_search(query, topk)     ← 暴力：和全库算距离 + topK 堆
-   └─ index_hnsw.hnsw_search(query, topk)     ← HNSW：分层图贪心 + ef 候选集
-   │
-得到 search_result_t out[topk]  (id + score)
-   │
-parser 格式化成多行 "id score" -> server 发回
-```
+> 黄金法则:**改之前先有基线(G0)。** 删除/WAL/并发/量化全会改坏正确性或性能,没基线就是盲改。
 
 ---
 
-## 4. 留白难点清单（按难度排序，刻意未实现）
+## 2. goal 清单
 
-> 这些都是你要亲手做的"学习目标"。每个函数体目前是 TODO，上方有流程树。
+每个 goal 的协作约定:**【骨架】= 我搭**(接口/类型/流程树注释,能编译、测试绿) · **【核心】= 你填**(留白,自己啃) · **【谈资】= 填完写成一段面试话术**(仿 `项目知识点.md`)。
 
-| 难度 | 位置 | 要点 | 对应知识分支 |
-|------|------|------|--------------|
-| ★☆☆ | `distance.c` | 循环点积 / L2；后续 SIMD 优化 | 分支2 相似度度量 |
-| ★★☆ | `vector_store.c` | 向量拷贝、id 映射、删除标记 | 分支5 系统/工程 |
-| ★★☆ | `index_flat.c` | topK 小顶堆维护 | 分支3 KNN/ANN |
-| ★★☆ | `parser.c` | float 数组解析、粘包边界 | 旧八股(粘包状态机) |
-| ★★☆ | `server.c` | epoll/LT/ET 事件循环 | 旧八股(epoll) |
-| ★★★ | `index_hnsw.c` | **分层图、贪心下降、ef 搜索、邻居选择、随机层级** | 分支4 HNSW（招牌菜） |
+### G0 · 测试 + 压测基线 〔核心交付,先做〕
+- **目标:** 一键验证"引擎正确"和"性能数字";顺手清理代码里过时的"还是桩/TODO"注释。
+- **【骨架】** 单测框架(distance/vstore/flat 正确性用例)、造数脚本、QPS/p99 压测客户端、flat-vs-hnsw recall sanity check。
+- **【核心】** 具体断言、p99 百分位统计、压测并发逻辑。
+- **【谈资】** 为什么重构前先立基线;p99 为什么比平均值有意义。
+- 状态:**骨架已搭**(`make test` 9/9 绿;`make bench` 端到端可跑)。**留白待你填**:`bench/bench_engine.c` 的 `percentile()` 与 `recall_at_k()`;`tests/` 里 5 处 `TODO` 断言(distance 归一化、cosine=归一化后 dot;vstore 删除墓碑、重复 id 拒绝;flat top-2 顺序)。
+- 文件:`tests/`(框架+3 套单测)、`bench/`(gen + 引擎基准)、`Makefile`(test/bench 目标,只链引擎不依赖 epoll)。
+
+### G6 · recall@K 基准 + 曲线 〔核心交付〕
+- **目标:** 用 flat 当 ground truth 量 HNSW recall,扫 M/ef 出 recall–latency 曲线,填进 README 性能表。
+- **【骨架】** benchmark 框架、ground-truth 生成、参数扫描骨架、出图脚本。
+- **【核心】** recall@K 计算、参数扫描循环。
+- **【谈资】** recall 定义、recall–latency 三角、M/ef 调参。
+- 状态:`未开始`
+
+### G1 · HNSW 删除 〔正确性,优先〕
+- **目标:** 修 DESIGN §3.3 的 bug——VDEL 后 VSEARCH 仍返回已删向量。tombstone 软删 + VDEL 接通索引 + 空间回收/重建。
+- **【骨架】** vstore 删除标记接口(已有墓碑)、HNSW `delete` API 桩、重建触发骨架。
+- **【核心】** 搜索时过滤 tombstone、重建/compaction、重建时邻居重连。
+- **【谈资】** 图索引删除为何难、软删 vs 硬删、墓碑堆积与重建时机。
+- 状态:`未开始`
+
+### G2 · 崩溃安全持久化 / WAL
+- **目标:** persist 现在只有手动全量快照(原子 rename 已做),无 WAL → 未 SAVE 即崩溃丢增量。加 WAL + 启动回放 + 快照截断。
+- **【骨架】** WAL 文件格式、append 接口、replay 主循环、快照+WAL 衔接骨架。
+- **【核心】** WAL 记录编解码、崩溃回放、fsync 时机。
+- **【谈资】** WAL 原理、RDB vs AOF、fsync/OS 缓冲、崩溃一致性。
+- 状态:`未开始`
+
+### G3 · 并发(读写锁 → 分片锁) 〔war story 候选〕
+- **目标:** 引擎零锁、单线程。先全局读写锁,再分片锁降争用。
+- **【骨架】** RW 锁封装、分片结构骨架、路由桩。
+- **【核心】** 锁粒度、分片路由、并发不变量、死锁规避。
+- **【谈资】** 读写锁、分片降争用、Redis 为何单线程、有锁 vs 无锁。
+- 状态:`未开始`
+
+### G4 · 主从 Reactor 多线程 〔war story 候选〕
+- **目标:** server 现在单 reactor 单线程,HNSW 操作阻塞事件循环。改主 reactor accept + 从 reactor 线程池处理 IO(配合 G3)。
+- **【骨架】** 线程模型骨架、accept→分发、每线程一个 epoll。
+- **【核心】** 连接分发/负载均衡、线程间唤醒、连接归属。
+- **【谈资】** 主从 reactor、惊群与 EPOLLEXCLUSIVE、one-loop-per-thread。
+- 状态:`未开始`
+
+### G7 · int8 标量量化 〔war story 候选〕
+- **目标:** float32 → int8,内存 1/4(minivec.h 已埋点),用 G6 量精度损失。
+- **【骨架】** codec 接口、量化版 vstore 桩、量化距离桩。
+- **【核心】** 量化/反量化、int8 距离、(选)SIMD。
+- **【谈资】** 标量量化、精度 vs 内存、SIMD。
+- 状态:`未开始`
+
+### G8 · PQ 乘积量化 〔招牌〕
+- **目标:** 子空间 + k-means 码本 + 距离查表(ADC)。
+- **【骨架】** PQ 结构、码本训练接口、查表骨架。
+- **【核心】** k-means、距离表、ADC 搜索。
+- **【谈资】** PQ 原理、IVF-PQ、为何能大幅压缩还能搜。
+- 状态:`未开始`
+
+### G5 · 二进制协议 〔后置〕
+- **目标:** length-prefixed 二进制替代 float-as-text(单条 ~3.5KB),保留文本兼容。
+- **【骨架】** 协议头、编解码桩、半包状态机骨架。
+- **【核心】** float 数组打包/解包、半包状态机、字节序。
+- **【谈资】** 文本 vs 二进制、粘包三解法、协议向后兼容。
+- 状态:`未开始`
+
+### G9 · 过滤检索 〔后置〕
+- **目标:** metadata 过滤 + ANN(pre/post-filter)。
+- **【骨架】** metadata 存储扩展、filter 接口。
+- **【核心】** filter 与 HNSW 遍历结合策略。
+- **【谈资】** filtered search 为何难、pre vs post filter。
+- 状态:`未开始`
 
 ---
 
-## 5. 配套知识点
+## 3. 收尾大叙事(选做)
 
-每个难点对应的"面试背诵分支"见上一轮对话整理的 10 个知识分支。
-建议每实现完一个模块，就把它对应的分支写成一段「面试回答」话术（仿 `项目知识点.md` 风格）。
+`sim/robotdog_slam_kv` 可把整个项目串成"端侧 AI 状态存储 + 向量检索"的应用故事,当面试收尾。不占核心 goal。
+
+---
+
+## 建议节奏
+
+`G0 → G6`(立住数字)→ 从 `G3/G4/G7/G8` 挑 **1 个深做出 war story** → `G1`(修 bug)→ 对标 Faiss/hnswlib(达成毕业标准)→ 其余按需。
