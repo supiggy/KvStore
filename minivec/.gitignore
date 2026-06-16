@@ -4,6 +4,7 @@
 /run_tests
 /run_bench
 /run_sweep
+/run_loadgen
 
 # 基准产物
 bench/results.csv

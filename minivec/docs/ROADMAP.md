@@ -39,7 +39,7 @@
 - **【骨架】** 单测框架(distance/vstore/flat 正确性用例)、造数脚本、QPS/p99 压测客户端、flat-vs-hnsw recall sanity check。
 - **【核心】** 具体断言、p99 百分位统计、压测并发逻辑。
 - **【谈资】** 为什么重构前先立基线;p99 为什么比平均值有意义。
-- 状态:**骨架已搭**(`make test` 9/9 绿;`make bench` 端到端可跑)。**留白待你填**:`bench/metrics.c` 的 `percentile()` 与 `recall_at_k()`(G6 已抽成共享,填一次两个基准都用);`tests/` 里 5 处 `TODO` 断言(distance 归一化、cosine=归一化后 dot;vstore 删除墓碑、重复 id 拒绝;flat top-2 顺序)。
+- 状态:**骨架已搭**(其 9 条用例全绿;`make bench` 端到端可跑。注:整体 `make test` 现含 G1/G7 的 TDD 红,各为对应目标的待办信号)。**留白待你填**:`bench/metrics.c` 的 `percentile()` 与 `recall_at_k()`(G6 已抽成共享,填一次两个基准都用);`tests/` 里 5 处 `TODO` 断言(distance 归一化、cosine=归一化后 dot;vstore 删除墓碑、重复 id 拒绝;flat top-2 顺序)。
 - 文件:`tests/`(框架+3 套单测)、`bench/`(gen + metrics + 引擎基准)、`Makefile`(test/bench 目标,只链引擎不依赖 epoll)。
 
 ### G6 · recall@K 基准 + 曲线 〔核心交付〕
@@ -79,14 +79,15 @@
 - **【核心】** 连接分发/负载均衡、线程间唤醒、连接归属。
 - **【谈资】** 主从 reactor、惊群与 EPOLLEXCLUSIVE、one-loop-per-thread。
 - 状态:**骨架已搭**(`make all` 编译过)。已填:N 个 worker 各自 epoll + 一根管道、`worker_loop`、`worker_register`、主线程 round-robin accept、recv/send 行分帧改用连接自带的 `epfd`。**留白待你填**:跨线程把新连接交给 worker —— 留白 A(主线程 `write(w->pipe_w, &connfd, ...)`)+ 留白 B(worker 从非阻塞 `pipe_r` 循环读出 connfd 并 `worker_register`)。填完 A/B + G3 的锁,多线程才真正跑通。
-- 文件:`src/net/server.c`。
+- 文件:`src/net/server.c`。配套并发压测工具:`bench/loadgen.c`(`make loadgen`)——多线程连真实服务端,产出端到端 QPS/p99(留白:一次请求-响应往返的计时)。
 
 ### G7 · int8 标量量化 〔war story 候选〕
 - **目标:** float32 → int8,内存 1/4(minivec.h 已埋点),用 G6 量精度损失。
 - **【骨架】** codec 接口、量化版 vstore 桩、量化距离桩。
 - **【核心】** 量化/反量化、int8 距离、(选)SIMD。
 - **【谈资】** 标量量化、精度 vs 内存、SIMD。
-- 状态:`未开始`
+- 状态:**骨架已搭**(`make all` 编译过;`test_quant` 2 条 TDD 红)。已填:`quant.{h,c}` 对称量化接口 + TDD 测试(反量化误差、量化域内积精度)。**留白待你填**:`q8_encode`/`q8_decode`/`q8_dot` 三个函数体。**进阶**:把量化向量接进 flat/HNSW 检索,用 G6 recall 曲线量"内存 4x↓ / recall 掉几个点"。
+- 文件:`src/engine/quant.{c,h}`、`tests/test_quant.c`。
 
 ### G8 · PQ 乘积量化 〔招牌〕
 - **目标:** 子空间 + k-means 码本 + 距离查表(ADC)。
