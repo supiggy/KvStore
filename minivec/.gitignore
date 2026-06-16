@@ -3,6 +3,11 @@
 /minivec
 /run_tests
 /run_bench
+/run_sweep
+
+# 基准产物
+bench/results.csv
+bench/*.png
 
 # 编辑器/系统
 *.swp

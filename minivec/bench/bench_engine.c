@@ -8,6 +8,7 @@
 #include "engine/index_flat.h"
 #include "engine/index_hnsw.h"
 #include "engine/distance.h"
+#include "metrics.h"          /* percentile / recall_at_k:留白移到 metrics.c,与 sweep 共享 */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,8 +27,8 @@
  *
  * 数据:随机向量,查询点不在库内(标准 ANN 评测设定,衡量泛化召回)。
  *
- * 两处留白(你填):percentile() 和 recall_at_k()。没填时它们返回 -1,
- * 报告里会显示 -1,程序照常跑完 —— 一眼看出哪两格还空着。
+ * 两处指标留白(你填):percentile() / recall_at_k(),现在在 bench/metrics.c。
+ * 没填时返回 -1,报告里显示 -1,程序照常跑完 —— 一眼看出哪两格还空着。
  * 用法: ./run_bench [N] [Q] [topk] [ef]   默认 5000 500 10 50
  * ============================================================================ */
 
@@ -36,42 +37,6 @@ static double now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1e6 + (double)ts.tv_nsec / 1e3;
-}
-
-/* 给 qsort 用:double 升序 */
-static int cmp_double(const void *a, const void *b) {
-    double x = *(const double *)a, y = *(const double *)b;
-    return (x < y) ? -1 : (x > y) ? 1 : 0;
-}
-
-/* ★ 留白 1:百分位 ──────────────────────────────────────────────
- * percentile(lat, n, p): 返回延迟数组 lat[0..n) 的第 p 百分位(p∈[0,1],如 0.99)
- * 流程树:
- *   ├─ 升序排序:qsort(lat, n, sizeof(double), cmp_double)
- *   ├─ nearest-rank 取下标:idx = (int)ceil(p * n) - 1
- *   ├─ 夹紧:idx < 0 → 0;idx > n-1 → n-1
- *   └─ return lat[idx]
- * 为什么要 p99 不用平均:平均被极端值"摊平",p99 才反映最差 1% 的真实体验。
- * TODO(你填): 实现它。<math.h> 的 ceil 可用。 */
-static double percentile(double *lat, int n, double p) {
-    (void)lat; (void)n; (void)p;
-    (void)cmp_double;   /* 你填 percentile 时会用到它(qsort 比较器),先引用一下免 unused 警告 */
-    return -1.0;   /* TODO */
-}
-
-/* ★ 留白 2:recall@k ────────────────────────────────────────────
- * recall_at_k(approx, gt, k): HNSW 结果 approx 与 暴力 ground-truth gt 的 id 交集占比
- * 流程树:
- *   ├─ hit = 0
- *   ├─ for i in [0,k):
- *   │     for j in [0,k):
- *   │         if approx[i].id == gt[j].id: hit++; break
- *   └─ return (double)hit / k
- * 这是衡量近似索引"准不准"的核心指标:1.0 = 和暴力完全一致。
- * TODO(你填): 实现它(双重循环比对 id)。 */
-static double recall_at_k(const search_result_t *approx, const search_result_t *gt, int k) {
-    (void)approx; (void)gt; (void)k;
-    return -1.0;   /* TODO */
 }
 
 int main(int argc, char **argv) {

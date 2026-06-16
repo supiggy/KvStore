@@ -20,7 +20,7 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(TARGET) run_tests run_bench
+	rm -f $(OBJS) $(TARGET) run_tests run_bench run_sweep
 
 # ---- G0:测试 & 基准 -------------------------------------------------------
 # 只链接引擎源码(不含 main.c / net/server.c),所以不依赖 epoll,
@@ -29,15 +29,22 @@ ENGINE_SRCS := src/engine/distance.c src/engine/vector_store.c \
                src/engine/index_flat.c src/engine/index_hnsw.c \
                src/engine/topk_heap.c src/engine/persist.c
 TEST_SRCS   := $(wildcard tests/*.c)
-BENCH_SRCS  := $(wildcard bench/*.c)
+BENCH_UTIL  := bench/gen.c bench/metrics.c   # 共享:造数 + 指标(留白在 metrics.c)
 
-.PHONY: test bench
+.PHONY: test bench sweep
 
 test: $(ENGINE_SRCS) $(TEST_SRCS)
 	$(CC) $(CFLAGS) -Itests $(ENGINE_SRCS) $(TEST_SRCS) -o run_tests $(LDFLAGS)
 	./run_tests
 
-bench: $(ENGINE_SRCS) $(BENCH_SRCS)
-	$(CC) $(CFLAGS) -Ibench $(ENGINE_SRCS) $(BENCH_SRCS) -o run_bench $(LDFLAGS)
+# G0:单点基准(flat vs hnsw 一组数字)
+bench: $(ENGINE_SRCS) $(BENCH_UTIL) bench/bench_engine.c
+	$(CC) $(CFLAGS) -Ibench $(ENGINE_SRCS) $(BENCH_UTIL) bench/bench_engine.c -o run_bench $(LDFLAGS)
 	@echo "用法: ./run_bench [N] [Q] [topk] [ef]   (默认 5000 500 10 50)"
 	./run_bench
+
+# G6:参数扫描基准(扫 M/ef 出 recall-QPS 曲线,产 CSV)
+sweep: $(ENGINE_SRCS) $(BENCH_UTIL) bench/sweep.c
+	$(CC) $(CFLAGS) -Ibench $(ENGINE_SRCS) $(BENCH_UTIL) bench/sweep.c -o run_sweep $(LDFLAGS)
+	@echo "用法: ./run_sweep [N] [Q] [topk] [out.csv]   然后 python3 bench/plot_recall.py"
+	./run_sweep
