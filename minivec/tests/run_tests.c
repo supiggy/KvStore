@@ -10,6 +10,7 @@ int main(void) {
     printf("== flat ==\n");     test_flat_suite();
     printf("== hnsw delete (G1) ==\n"); test_hnsw_delete_suite();
     printf("== quant (G7) ==\n");        test_quant_suite();
+    printf("== pq (G8) ==\n");            test_pq_suite();
 
     printf("\n%d 项检查, %d 项失败\n", mv_tests_run, mv_tests_failed);
     if (mv_tests_failed > 0) {

@@ -94,7 +94,8 @@
 - **【骨架】** PQ 结构、码本训练接口、查表骨架。
 - **【核心】** k-means、距离表、ADC 搜索。
 - **【谈资】** PQ 原理、IVF-PQ、为何能大幅压缩还能搜。
-- 状态:`未开始`
+- 状态:**骨架已搭**(`make all` 编译过;`test_pq` 2 条 TDD 红)。已填:`pq.{h,c}` 码本布局 + create/destroy/decode + 取指针工具;TDD 测试(重建 MSE、ADC 一致性)。**留白待你填**:`pq_train`(每段 k-means)、`pq_encode`(最近质心)、`pq_build_table`(距离表)、`pq_adc`(查表求和)。**进阶**:接进检索,与 G7 int8 对比压缩比/recall。
+- 文件:`src/engine/pq.{c,h}`、`tests/test_pq.c`。
 
 ### G5 · 二进制协议 〔后置〕
 - **目标:** length-prefixed 二进制替代 float-as-text(单条 ~3.5KB),保留文本兼容。

@@ -27,7 +27,8 @@ clean:
 # 可脱离网络层单独编译运行。一条命令:make test / make bench
 ENGINE_SRCS := src/engine/distance.c src/engine/vector_store.c \
                src/engine/index_flat.c src/engine/index_hnsw.c \
-               src/engine/topk_heap.c src/engine/persist.c src/engine/quant.c
+               src/engine/topk_heap.c src/engine/persist.c \
+               src/engine/quant.c src/engine/pq.c
 TEST_SRCS   := $(wildcard tests/*.c)
 BENCH_UTIL  := bench/gen.c bench/metrics.c   # 共享:造数 + 指标(留白在 metrics.c)
 

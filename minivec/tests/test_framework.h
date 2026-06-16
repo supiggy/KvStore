@@ -32,5 +32,6 @@ void test_vstore_suite(void);
 void test_flat_suite(void);
 void test_hnsw_delete_suite(void);
 void test_quant_suite(void);
+void test_pq_suite(void);
 
 #endif /* MV_TEST_FRAMEWORK_H */
