@@ -1,6 +1,8 @@
 # 构建产物
 *.o
 /minivec
+/run_tests
+/run_bench
 
 # 编辑器/系统
 *.swp
