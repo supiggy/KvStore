@@ -2,7 +2,7 @@
 
 > 本文是 `dui.c` 的流程树讲解。`dui.c` = 给 `index_flat.c` 用的**固定容量 K 的小顶堆**,
 > 元素是 `search_result_t {id, score}`,服务"找 score 最大的 K 个"。
-> 配套见 `数据结构知识点.md`(通用堆原理)、`讲解-02-index_flat.md`(怎么用)。
+> 配套见 `八股/mv-04-堆与KNN.md`(通用堆原理)、`讲解-02-index_flat.md`(怎么用)。
 
 ---
 

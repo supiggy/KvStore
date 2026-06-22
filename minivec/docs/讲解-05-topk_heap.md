@@ -4,7 +4,7 @@
 > 数据结构:小顶堆(数组存完全二叉树)。难度 ★★☆。
 >
 > 本文是**模块级速览**;完整流程树 + 执行 trace 见 `dui-流程树.md`,
-> 堆原理 + priority_queue 对照见 `数据结构知识点.md`,LeetCode 示例见 `pq.c`(LC347)。
+> 堆原理 + priority_queue 对照见 `八股/mv-04-堆与KNN.md`,LeetCode 示例见 `pq.c`(LC347)。
 
 ---
 
