@@ -1,0 +1,15 @@
+# 构建产物
+*.o
+/minivec
+/run_tests
+/run_bench
+/run_sweep
+/run_loadgen
+
+# 基准产物
+bench/results.csv
+bench/*.png
+
+# 编辑器/系统
+*.swp
+.DS_Store

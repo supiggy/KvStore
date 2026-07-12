@@ -188,6 +188,7 @@ int epoll_entry() {
 
 	epfd = epoll_create(1); // int size
 
+	//循环创建多个监听套接字，并将它们添加到epoll实例中
 	for (i = 0;i < port_count;i ++) {
 		int sockfd = init_server(port + i);  // 2048, 2049, 2050, 2051 ... 2057
 		connlist[sockfd].fd = sockfd;
@@ -195,6 +196,7 @@ int epoll_entry() {
 		set_event(sockfd, EPOLLIN, 1);
 	}
 
+	//这里是
 	gettimeofday(&zvoice_king, NULL);
 
 	struct epoll_event events[1024] = {0};

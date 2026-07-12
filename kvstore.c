@@ -82,6 +82,8 @@ static int kvstore_command_index(char *cmd_name) {
     return KVS_CMD_COUNT;
 }
 
+// 处理完一条命令后清空读缓冲，否则 rlen 持续累加、rbuffer 残留上一条数据，下一条命令会和旧数据粘连导致解析错误。
+// 注意：这里假设"一次 recv = 一条完整命令"，适合当前请求-响应测试；生产环境应改用长度字段/分隔符 + 状态机处理粘包半包（见 项目知识点.md 第10节）。
 static void kvstore_write_set_response(char *msg, int res) {
     if (res < 0) {
         snprintf(msg, BUFFER_LENGTH, "ERROR");
