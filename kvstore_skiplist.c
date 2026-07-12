@@ -45,6 +45,8 @@ struct skiplist {
 
 static struct skiplist skip_list = {0};
 
+//strdup 的变体，失败返回 NULL，成功返回新分配的字符串指针（调用者负责 free）。
+//是用来复制字符串的函数，它会分配足够的内存来存储源字符串，并将源字符串的内容复制到新分配的内存中。调用者需要负责释放返回的指针所指向的内存，以避免内存泄漏。
 static char *kvstore_strdup(const char *src) {
     char *dst = NULL;
 

@@ -4,6 +4,8 @@
 #include <stdexcept>
 using namespace std;
 
+
+
 class Heap {
 private:
     // 用数组存储堆。

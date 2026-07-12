@@ -1,72 +1,92 @@
 # KvStore
 
-KvStore is a C-based in-memory key-value store learning project. It combines a simple text protocol, a fixed-size array storage engine, and a TCP server entry based on NtyCo coroutines.
+KvStore is a C learning project for an in-memory key-value server. The root
+program combines a text TCP protocol, an epoll event loop, and several storage
+engines implemented from scratch.
 
-The current default configuration uses the NtyCo network backend and the array KV engine.
+The current checked-in build path uses the epoll backend and listens on ports
+starting at `2048`.
 
-## Features
-
-- In-memory key-value storage
-- Text commands over TCP
-- Basic `SET`, `GET`, `DEL`, and `MOD` operations
-- Fixed-size array engine with duplicated key/value memory
-- Pluggable network backend switches defined in `kvstore.h`
-- NtyCo coroutine server listening on port `9096`
-
-## Project Structure
+## What Is Here
 
 ```text
 .
-|-- kvstore.c                  # Protocol parsing and request dispatch
-|-- kvstore.h                  # Shared structs, engine/network switches
-|-- kvstore_array.c            # Array-based KV engine
-|-- ntyco_entry.c              # NtyCo coroutine TCP server entry
-|-- testcase.c                 # TCP client test scaffold
-|-- Makefile                   # Build script
-|-- tcp-connect-template-IO.c  # TCP I/O learning template
-|-- tcp-connect-template-reactorc
-|                              # Reactor learning template
-`-- 2.1.1-multi-io-main/       # Multi-I/O learning examples
+|-- kvstore.c                    # main(), protocol parsing, command dispatch
+|-- kvstore.h                    # shared structs, engine switches, network switch
+|-- epoll_entry.c                # active TCP server backend, ports 2048-2067
+|-- ntyco_entry.c                # optional NtyCo coroutine backend
+|-- kvstore_array.c              # fixed-size array KV engine
+|-- kvstore_rbtree.c             # red-black tree KV engine
+|-- kvstore_hash.c               # hash-table KV engine
+|-- kvstore_skiplist.c           # skiplist KV engine
+|-- testcase.c                   # TCP client test scaffold
+|-- Makefile                     # root KVStore build
+|-- 2.1.1-multi-io-main/         # blocking/thread/select/poll/epoll examples
+|-- minivec/                     # separate vector database learning project
+|-- sim/robotdog_slam_kv/        # Robotdog SLAM -> KVStore simulation
+`-- 八股/                        # interview and project notes
 ```
 
-## Protocol
+`kvstore-template.c`, `tcp-connect-template-IO.c`, and
+`tcp-connect-template-reactorc` are teaching/template files, not the default
+build path.
+
+## Root KVStore
+
+### Runtime Flow
+
+```text
+client socket
+  -> epoll_entry.c:recv_cb()
+  -> kvstore.c:kvstore_request()
+  -> kvstore.c:kvstore_parse_protocol()
+  -> selected KV engine
+  -> epoll_entry.c:send_cb()
+```
+
+Each connection uses `struct conn_item` from `kvstore.h`, which stores the file
+descriptor, read buffer, write buffer, and callbacks.
+
+### Commands
 
 Commands are uppercase and space-separated.
 
 ```text
-SET <key> <value>
-GET <key>
-MOD <key> <value>
-DEL <key>
+SET <key> <value>      GET <key>      DEL <key>      MOD <key> <value>
+RSET <key> <value>     RGET <key>     RDEL <key>     RMOD <key> <value>
+HSET <key> <value>     HGET <key>     HDEL <key>     HMOD <key> <value>
+ZSET <key> <value>     ZGET <key>     ZDEL <key>     ZMOD <key> <value>
 ```
 
-Example session:
+Command groups map to engines:
 
 ```text
-SET NAME King
-SUCCESS
-
-GET NAME
-King
-
-MOD NAME Queen
-SUCCESS
-
-DEL NAME
-SUCCESS
-
-GET NAME
-NO EXIST
+SET/GET/DEL/MOD       -> array
+RSET/RGET/RDEL/RMOD   -> red-black tree
+HSET/HGET/HDEL/HMOD   -> hash table
+ZSET/ZGET/ZDEL/ZMOD   -> skiplist
 ```
 
-## Configuration
+Responses are plain text:
 
-Main switches are defined in `kvstore.h`:
+```text
+SUCCESS
+FAIL
+NO EXIST
+ERROR
+UNKNOWN COMMAND
+```
+
+### Configuration
+
+Main switches are in `kvstore.h`:
 
 ```c
 #define ENABLE_ARRAY_KVENGINE 1
-#define ENABLE_NETWORK_SELECT NETWORK_NTYCO
-#define KVS_ARRAY_SIZE 1024
+#define ENABLE_RBTREE_KVENGINE 1
+#define ENABLE_HASH_KVENGINE 1
+#define ENABLE_SKIPTABLE_KVENGINE 1
+#define ENABLE_NETWORK_SELECT NETWORK_EPOLL
 ```
 
 Available network constants:
@@ -77,75 +97,96 @@ Available network constants:
 #define NETWORK_IO_URING 2
 ```
 
-The current source tree mainly wires the NtyCo path through `ntyco_entry.c`.
+The current `Makefile` builds the epoll path. The NtyCo path is present as a
+learning backend, but it is not the default build.
 
-## Build
+### Build And Run
 
-The Makefile expects the NtyCo dependency to be available under `./NtyCo/` and to provide:
-
-- headers under `./NtyCo/core/`
-- library file linked by `-L ./NtyCo/ -lntyco`
-
-Build command:
+Build in Linux or the dev container. The active server uses Linux networking
+APIs such as epoll.
 
 ```sh
 make
-```
-
-Clean command:
-
-```sh
-make clean
-```
-
-Note: the current Makefile references `epoll_entry.c`, but that file is not present in this repository snapshot. If you only want to build the NtyCo version, remove `epoll_entry.c` from `SRCS` or add the missing implementation.
-
-## Run
-
-After a successful build:
-
-```sh
 ./kvstore
 ```
 
-The NtyCo server listens on:
-
-```text
-0.0.0.0:9096
-```
-
-You can connect with `nc`:
+Connect to the first default port:
 
 ```sh
-nc 127.0.0.1 9096
+nc 127.0.0.1 2048
 ```
 
-Then send commands such as:
+Example session:
 
 ```text
 SET NAME King
 GET NAME
 MOD NAME Queen
 DEL NAME
+GET NAME
 ```
 
-## Test Client
-
-`testcase.c` is a simple TCP client test scaffold intended to exercise the array engine commands:
+Clean build outputs:
 
 ```sh
-./testcase -s 127.0.0.1 -p 9096 -m 1
+make clean
 ```
 
-It may need cleanup before being used as an automated test runner.
+## MiniVec
+
+`minivec/` is a separate C vector database learning project. It has its own
+Makefile, source tree, tests, benchmarks, and docs.
+
+It supports commands such as:
+
+```text
+VADD
+VSEARCH
+VDEL
+VCOUNT
+SAVE
+LOAD
+```
+
+Use its own build from inside `minivec/`:
+
+```sh
+cd minivec
+make
+make test
+make bench
+```
+
+## Simulation
+
+`sim/robotdog_slam_kv/` is an application-level simulation that writes robot
+state, map metadata, pose graph summaries, keyframes, and semantic tiles into
+KVStore. It does not change the KVStore server; it acts as a client/demo.
+
+Offline mode can be used without starting the server:
+
+```sh
+python3 sim/robotdog_slam_kv/robotdog_slam_kv_sim.py --offline --trace-out sim_trace.jsonl
+```
+
+Against the epoll server:
+
+```sh
+./kvstore
+python3 sim/robotdog_slam_kv/robotdog_slam_kv_sim.py --host 127.0.0.1 --port 2048
+```
 
 ## Current Status
 
-This repository is primarily a learning project for:
+This is primarily a learning repository for:
 
 - TCP server programming
-- epoll/reactor concepts
-- coroutine-based network handling
-- simple KV engine design
+- epoll/reactor design
+- coroutine backend comparison
+- basic KV engine implementation
+- vector search internals through `minivec/`
 
-The array engine is functional at a basic level, but the project still needs build cleanup, safer protocol validation, and more complete automated tests before production use.
+The root KVStore is usable for simple request-response testing. The protocol
+still assumes a simple teaching model where one `recv` corresponds to one
+complete command; a production version should add line framing or a
+length-prefixed protocol and stronger validation.

@@ -4,7 +4,16 @@
 *.exe
 kvstore
 testcase
+run_*
+sim_trace*.jsonl
+*.log
+__pycache__/
+*.py[cod]
 
-# Local editor and notes
+# Local tools, editor, and notes
+.codegraph/
+.agents/
+.claude/
+.codex/
 .vscode/
 notes/
